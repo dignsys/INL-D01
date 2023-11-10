@@ -1,5 +1,5 @@
 /* 
- * INLD-01 Main 
+ * INL-D01 Main 
  * Author : DIGNSYS Inc.
  */
 
@@ -153,6 +153,32 @@ class MyCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
+#define UG_BUTTON_DEBOUNCE    200 // 200: good, 50: initial
+
+enum {
+  UG_BUTTON_RELEASED,
+  UG_BUTTON_PRESSED,
+};
+
+enum {
+  STATE_BUZZER_OFF,
+  STATE_BUZZER_ON,
+};
+
+int ug_button_isr_detected = 0;
+int ug_button_status = UG_BUTTON_PRESSED;
+unsigned long last_isr_millis = 0;
+
+#define MQ2_WARM_UP_TIME    300000  //1000*60*5  // 5 minutes
+
+int mq2_warm_up_end = 0;
+unsigned long sys_start_millis = 0;
+
+enum {
+  STATE_FLAME_NONE,
+  STATE_FLAME_DETECTED,
+};
+
 // put function declarations here:
 void sub_test_a(void);
 void sub_test_b(void);
@@ -176,6 +202,9 @@ void sub_task_gas(void);
 void sub_task_temperature(void);
 void sub_task_illuminance(void);
 void sub_task_tof(void);
+
+void isr_button(void);
+void set_buzzer(int state);
 
 uint8_t get_flame(void);
 int16_t get_axis_x(void);
@@ -327,12 +356,14 @@ void setup() {
   bidata = -1;
   Serial.printf("bidata: %02x\r\n", bidata);
 
+  attachInterrupt(PIN_BUTTON, isr_button, FALLING);
+
 }
 
 void loop() {
 
   Serial.println();
-  Serial.println("INLD-01 Main Loop");
+  Serial.println("INL-D01 Main Loop");
   Serial.println("(C) 2023 Dignsys");
   Serial.println();
 
@@ -340,6 +371,8 @@ void loop() {
   unsigned long cur_millis = 0;
   unsigned long prev_millis = 0;
   uint8_t sbt_count = 0;
+
+  sys_start_millis = millis();
 
   while(1){
 
@@ -355,11 +388,12 @@ void loop() {
       Serial.println("Go to Sub Test!!!");
       sub_test_loop();
       Serial.println("Return to Main Loop!!!");
+      c = 0;
     }
 #if (DISABLE_BLE_OP != 1) // Disable BLE
     if(!(sbt_count % 4)){
       if (deviceConnected) {
-        Serial.printf("*** NOTIFY: %d ***\n", value);
+        Serial.printf("*** NOTIFY: %d ***\r\n", value);
         pCharacteristic->setValue(&value, 1);
         pCharacteristic->notify();
         value++;
@@ -368,7 +402,7 @@ void loop() {
 
     if(!(sbt_count % 10)){
       if (!deviceConnected) {
-        Serial.printf("*** Custom UUID Byte: %02x\n", custom_uuid_byte_0);
+        Serial.printf("*** Custom UUID Byte: %02x\r\n", custom_uuid_byte_0);
         update_beacon();
         custom_uuid_byte_0++;
       }
@@ -390,6 +424,15 @@ void loop() {
 
     // wait until the interval
     while(1){
+      if(ug_button_isr_detected){
+        Serial.printf("UG_Button_Detected: %d\r\n", ug_button_status);
+        if(ug_button_status == UG_BUTTON_PRESSED) {
+          set_buzzer(STATE_BUZZER_ON);
+        } else if(ug_button_status == UG_BUTTON_RELEASED) {
+          set_buzzer(STATE_BUZZER_OFF);
+        }
+        ug_button_isr_detected = 0;
+      }
       cur_millis = millis();
       if((cur_millis - prev_millis) < 500){
         delay(10);
@@ -409,7 +452,7 @@ void loop() {
 void sub_test_loop(void){
 
   Serial.println();
-  Serial.println("INLD-01 Sub-Testing");
+  Serial.println("INL-D01 Sub-Testing");
   Serial.println("(C) 2023 Dignsys");
   Serial.println();
 
@@ -614,8 +657,8 @@ void update_beacon() {
   } else {
     myUUID.setCharAt(1, (tdata%10) + 'A');
   }
-  Serial.printf("myUUID: %c, %c\n", myUUID.charAt(0), myUUID.charAt(1));
-  Serial.printf("myUUID: %s\n", myUUID.c_str());
+  Serial.printf("myUUID: %c, %c\r\n", myUUID.charAt(0), myUUID.charAt(1));
+  Serial.printf("myUUID: %s\r\n", myUUID.c_str());
   myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
 #elif 0
   String myUUID(custom_beacon_uuid);
@@ -779,7 +822,7 @@ void update_beacon() {
   twdata += tadata[19];
   //twdata = 0xabcd;
   myBeacon.setMinor(twdata);
-  Serial.printf("myUUID: %s\n", myUUID.c_str());
+  Serial.printf("myUUID: %s\r\n", myUUID.c_str());
   //myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
   myBeacon.setProximityUUID(BLEUUID(myUUID_R.c_str()));
 #else
@@ -827,6 +870,33 @@ uint16_t CRC16(const uint8_t *data, uint16_t len)
     return crc;
 }
 
+void isr_button(void) {
+
+  if(millis() > (last_isr_millis + UG_BUTTON_DEBOUNCE)){
+
+    if(ug_button_status == UG_BUTTON_RELEASED){
+      ug_button_status = UG_BUTTON_PRESSED;
+    } else {
+      ug_button_status = UG_BUTTON_RELEASED;
+    }
+    ug_button_isr_detected = 1;
+    last_isr_millis = millis();
+  }
+}
+
+void set_buzzer(int state){
+  
+  if(state == STATE_BUZZER_OFF){
+
+    digitalWrite(PIN_BUZZER, LOW);
+
+  } else if(state == STATE_BUZZER_ON){
+
+    digitalWrite(PIN_BUZZER, HIGH);
+
+  }
+}
+
 void sub_task_flame(void) {
 
   gv_flame = digitalRead(PIN_PT);
@@ -856,7 +926,18 @@ void sub_task_gas(void) {
 
 #if 1
   gv_gas = analogRead(PIN_MQ2_AO);
+
+  if(!mq2_warm_up_end){
+    if(millis() > sys_start_millis + MQ2_WARM_UP_TIME){
+      mq2_warm_up_end = 1;
+      Serial.printf("MQ-2 Warm-up end: %d\r\n", gv_gas);
+    }
+  }
+
   Serial.printf("MQ-2 Gas Sensor: %d\r\n", gv_gas);
+  if(!mq2_warm_up_end){
+    gv_gas = 0;
+  }
 #else
   gv_gas = 320;
 #endif
@@ -913,7 +994,14 @@ void sub_task_tof(void) {
 
 uint8_t get_flame(void) {
 
-  return gv_flame;
+  uint8_t ret;
+
+  if(gv_flame){
+    ret = STATE_FLAME_NONE;
+  } else{
+    ret = STATE_FLAME_DETECTED;
+  }
+  return ret;
 }
 
 int16_t get_axis_x(void) {
@@ -1535,12 +1623,12 @@ void sub_test_v(void) {
       break;
     }
     if (deviceConnected) {
-      Serial.printf("*** NOTIFY: %d ***\n", value);
+      Serial.printf("*** NOTIFY: %d ***\r\n", value);
       pCharacteristic->setValue(&value, 1);
       pCharacteristic->notify();
       value++;
     } else {
-      Serial.printf("*** Custom UUID Byte: %02x\n", custom_uuid_byte_0);
+      Serial.printf("*** Custom UUID Byte: %02x\r\n", custom_uuid_byte_0);
       update_beacon();
       custom_uuid_byte_0++;
       delay(3000);

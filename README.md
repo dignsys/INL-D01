@@ -24,7 +24,7 @@
 
   Arduino IDE : Tools --> Manage Libraries... --> Library Manager
 
-  Install이 필요한 Library : Ethernet_Generic
+  Install이 필요한 Library : Ethernet_Generic, Adafruit_SHT4x, ICM42670P, DFRobot_TMF8x01
 
 - User Arduino Library (.ZIP) 추가
 

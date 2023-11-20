@@ -13,6 +13,7 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <BLEBeacon.h>
+#include <LittleFS.h>
 
 #define PIN_BOOT            0
 #define PIN_BAT             2
@@ -34,6 +35,7 @@ DFRobot_TMF8801 tof(/*enPin =*/TMF8801_EN,/*intPin=*/TMF8801_INT);
 uint8_t caliDataBuf[14] = {0x41,0x57,0x01,0xFD,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x04};//The 14 bytes calibration data which you can get by calibration.ino demo.
 
 #define DISABLE_BLE_OP    0
+#define BLE_FORMAT_TEST   0
 
 #define DEVICE_NAME            "ESP32"
 #define SERVICE_UUID           "7A0247E7-8E88-409B-A959-AB5092DDB03E"
@@ -187,6 +189,7 @@ void sub_test_d(void);
 void sub_test_e(void);
 void sub_test_g(void);
 void sub_test_h(void);
+void sub_test_s(void);
 void sub_test_t(void);
 void sub_test_u(void);
 void sub_test_v(void);
@@ -493,6 +496,9 @@ void sub_test_loop(void){
       case 'h':
         sub_test_h();
         break;
+      case 's':
+        sub_test_s();
+        break;
       case 't':
         sub_test_t();
         break;
@@ -775,7 +781,7 @@ void update_beacon() {
 
   // Temperature
   tbidata = get_temperature(); //27;
-  tadata[12] = tbdata;
+  tadata[12] = tbidata;
   get_char(tbidata, tcdata);
   myUUID.setCharAt(28, tcdata[0]);
   myUUID.setCharAt(29, tcdata[1]);
@@ -822,6 +828,7 @@ void update_beacon() {
   twdata += tadata[19];
   //twdata = 0xabcd;
   myBeacon.setMinor(twdata);
+  Serial.printf("Major: 0x%04x, Minor: 0x%04x\r\n", get_tof(), twdata);
   Serial.printf("myUUID: %s\r\n", myUUID.c_str());
   //myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
   myBeacon.setProximityUUID(BLEUUID(myUUID_R.c_str()));
@@ -1001,47 +1008,83 @@ uint8_t get_flame(void) {
   } else{
     ret = STATE_FLAME_DETECTED;
   }
+#if (BLE_FORMAT_TEST == 1)
+  return 0;
+#else
   return ret;
+#endif
 }
 
 int16_t get_axis_x(void) {
 
+#if (BLE_FORMAT_TEST == 1)
+  return 120;
+#else
   return gv_axis_x;
+#endif
 }
 
 int16_t get_axis_y(void) {
 
+#if (BLE_FORMAT_TEST == 1)
+  return 10;
+#else
   return gv_axis_y;
+#endif
 }
 
 int16_t get_axis_z(void) {
 
+#if (BLE_FORMAT_TEST == 1)
+  return -10;
+#else
   return gv_axis_z;
+#endif
 }
 
 uint16_t get_gas(void) {
 
+#if (BLE_FORMAT_TEST == 1)
+  return 320;
+#else
   return gv_gas;
+#endif
 }
 
 int8_t get_temperature(void) {
 
+#if (BLE_FORMAT_TEST == 1)
+  return 27;
+#else
   return gv_temperature;
+#endif
 }
 
 uint8_t get_humidity(void) {
 
+#if (BLE_FORMAT_TEST == 1)
+  return 25;
+#else
   return gv_humidity;
+#endif
 }
 
 uint16_t get_illuminance(void) {
 
+#if (BLE_FORMAT_TEST == 1)
+  return 1200;
+#else
   return gv_illuminance;
+#endif
 }
 
 uint16_t get_tof(void) {
 
+#if (BLE_FORMAT_TEST == 1)
+  return 1500;
+#else
   return gv_tof;
+#endif
 }
 
 void sub_test_a(void) {
@@ -1534,6 +1577,37 @@ void sub_test_h(void) {
       Serial.print(tof.getDistance_mm());       //Print measurement data to USB Serial COM, unit mm, in eCOMBINE mode.
       Serial.println(" mm");
     }
+  }
+
+}
+
+void sub_test_s(void) {
+
+  uint8_t data;
+  char c;
+  int r_data = 0;
+  String strLog;
+  Serial.println("Sub-test S - LiitleFS");
+
+  Serial.print("Input Test Number: ");
+  while(1){
+    if(Serial.available()) {
+      c = Serial.read();
+      if(isalnum(c)) break;
+    }
+    delay(100);
+  }
+  Serial.println(c);
+
+  if(c == '0') {
+    LittleFS.begin();
+    LittleFS.format();
+  } else if(c == '6') {
+    Serial.printf("TotalBytes: %d(0x%x), UsedBytes: %d(0x%x)\r\n", 
+      LittleFS.totalBytes(), LittleFS.totalBytes(), LittleFS.usedBytes(), LittleFS.usedBytes());
+  } else {
+    Serial.println("Invalid Test Number");
+    return;
   }
 
 }

@@ -29,6 +29,12 @@
 - User Arduino Library (.ZIP) 추가
 
   Arduino IDE : Tools --> Sketch --> Include Library --> Add .ZIP Libraries...
+
+- Partition Scheme 선택
+
+  Flash Memory의 Application 영역을 충분히 크게 확보하기 위해서, 하기와 같이 Partition Scheme을 선택한다. Default Partition 선택시, Application 영역이 부족하여 빌드 오류가 발생할 수 있다.
+  
+  Arduino IDE : Tools --> Partition Scheme --> Minimal SPIFF (1.9MB APP with OTA/190KB SPIFFS)
 ## Sample Source Code for Hardware Basic Operation
 - 실행 방법
   시스템을 부팅하면, 각 센서의 값을 측정하여 주기적으로 BLE Advertising를 송출하는 기능이 Main Loop로 실행됩니다. 이후, '#'키를 입력하여, Sub Test 함수들을 시험할 수 있는 메뉴로 진입합니다.

@@ -14,6 +14,12 @@
 #include <BLE2902.h>
 #include <BLEBeacon.h>
 #include <LittleFS.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <EEPROM.h>
+#include <ArduinoJson.h>
+
+#define VERSION_INL_D01_FW  "20231213"
 
 #define PIN_BOOT            0
 #define PIN_BAT             2
@@ -34,13 +40,15 @@ DFRobot_TMF8801 tof(/*enPin =*/TMF8801_EN,/*intPin=*/TMF8801_INT);
 
 uint8_t caliDataBuf[14] = {0x41,0x57,0x01,0xFD,0x04,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x04};//The 14 bytes calibration data which you can get by calibration.ino demo.
 
-#define DISABLE_BLE_OP    0
+#define ENABLE_BLE_OP     1
 #define BLE_FORMAT_TEST   0
+#define ENABLE_MQTT_OP    1
+#define SINGLE_TASK_PERIOD  250 // 20 tasks * 250 = 5 sec (full task period)
+//#define INL_NOT_USING_SENSOR
 
 #define DEVICE_NAME            "ESP32"
 #define SERVICE_UUID           "7A0247E7-8E88-409B-A959-AB5092DDB03E"
 #define BEACON_UUID            "2D7A9F0C-E0E8-4CC9-A71B-A21DB2D034A1"
-//#define BEACON_UUID_REV        "88888888-1DA2-1BA7-C94C-E8E00C9F7A2D"
 #define BEACON_UUID_REV        "A134D0B2-1DA2-1BA7-C94C-E8E00C9F7A2D"
 #define CHARACTERISTIC_UUID    "82258BAA-DF72-47E8-99BC-B73D7ECD08A5"
 
@@ -109,6 +117,17 @@ int8_t gv_temperature = 0;
 uint8_t gv_humidity = 0;
 uint16_t gv_illuminance = 0;
 uint16_t gv_tof = 0;
+float gvf_acc_x = 0.;
+float gvf_acc_y = 0.;
+float gvf_acc_z = 0.;
+float gvf_gyro_x = 0.;
+float gvf_gyro_y = 0.;
+float gvf_gyro_z = 0.;
+float gvf_temperature = 0.;
+float gvf_humidity = 0.;
+int gvi_flame = 0.;
+int gvi_gas = 0;
+float gvf_tof = 0.;
 
 void init_service(void);
 void init_beacon(void);
@@ -181,18 +200,47 @@ enum {
   STATE_FLAME_DETECTED,
 };
 
+uint32_t crc32_value = 0xFFFFFFFF;
+static const uint32_t crc32_table[16] = {
+    0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac,
+    0x76dc4190, 0x6b6b51f4, 0x4db26158, 0x5005713c,
+    0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c,
+    0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c
+};
+uint32_t crc32_state = 0;
+
+const char* ssid = "DIGNSYS LAB 2G"; // WiFi SSID
+const char* password = "***"; // WiFi Password
+const char* mqttServer = "broker.emqx.io";
+//const char* mqttServer = "192.168.1.***";
+const int mqtt_port = 1883;
+char mqtt_clientId[50];
+WiFiClient espClient;
+PubSubClient mqtt_client(espClient);
+uint16_t sn_dev_address = 0x0001;
+uint8_t sn_dev_id[5] = {0x00, 0x00, 0x00, 0x00, 0x01};
+uint8_t sn_dev_location = 0x01;
+
+#define EEPROM_SIZE 512
+int eeprom_addr = 0;
+byte eeprom_write_data;
+byte eeprom_read_data;
+
+void connectToMQTT(void);
+void mqtt_callback(char* topic, byte* message, unsigned int length);
+
 // put function declarations here:
-void sub_test_a(void);
-void sub_test_b(void);
-void sub_test_c(void);
-void sub_test_d(void);
-void sub_test_e(void);
-void sub_test_g(void);
-void sub_test_h(void);
-void sub_test_s(void);
-void sub_test_t(void);
-void sub_test_u(void);
-void sub_test_v(void);
+void sub_test_a(void);  // I2C Read Test
+void sub_test_b(void);  // I2C Write Test
+void sub_test_c(void);  // ICM42670P Test
+void sub_test_d(void);  // Button Test
+void sub_test_e(void);  // VEML3235 Test
+void sub_test_g(void);  // SHT4x Test
+void sub_test_h(void);  // TMF8801 Test
+void sub_test_s(void);  // LittleFS Format Test
+void sub_test_t(void);  // L-51POPT1D2 Test
+void sub_test_u(void);  // Buzzer Test
+void sub_test_v(void);  // BLE iBeacon Test
 void sub_test_loop(void);
 
 int i2c_read(uint8_t addr, uint8_t reg, uint8_t* pdata, uint8_t dlen);
@@ -205,6 +253,7 @@ void sub_task_gas(void);
 void sub_task_temperature(void);
 void sub_task_illuminance(void);
 void sub_task_tof(void);
+void sub_tast_mqtt_pub(void);
 
 void isr_button(void);
 void set_buzzer(int state);
@@ -234,7 +283,7 @@ void setup() {
   pinMode(PIN_BUZZER, OUTPUT);
   digitalWrite(PIN_BUZZER, LOW);
 
-#if 1
+#ifndef INL_NOT_USING_SENSOR
   // Initializing the ICM42670P
   ret = IMU.begin();
   if (ret != 0) {
@@ -332,7 +381,8 @@ void setup() {
 
   tof.startMeasurement(/*cailbMode =*/tof.eModeCalib);                 //Enable measuring with Calibration data.
 #endif
-#if (DISABLE_BLE_OP != 1) // Disable BLE init
+
+#if (ENABLE_BLE_OP == 1) // Enable BLE init
   Serial.println("init_stage_00");
   BLEDevice::init(DEVICE_NAME);
   Serial.println("init_stage_01");
@@ -346,6 +396,7 @@ void setup() {
 
   Serial.println("iBeacon + service defined and advertising!");
 #endif
+
   uint8_t mdata[6];
   esp_read_mac(mdata, ESP_MAC_WIFI_STA);
   Serial.printf("Base MAC: %02x, %02x, %02x, %02x, %02x, %02x\r\n", mdata[0], mdata[1], mdata[2], mdata[3], mdata[4], mdata[5]);
@@ -361,6 +412,34 @@ void setup() {
 
   attachInterrupt(PIN_BUTTON, isr_button, FALLING);
 
+#if (ENABLE_MQTT_OP == 1)
+  Serial.print("Connecting to WiFi");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(200);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  mqtt_client.setServer(mqttServer, mqtt_port);
+  mqtt_client.setCallback(mqtt_callback);
+
+  EEPROM.begin(EEPROM_SIZE);
+
+  eeprom_write_data = 42;
+  EEPROM.write(eeprom_addr, eeprom_write_data);
+  Serial.println("EEPROM Data Write Done");
+
+  eeprom_read_data = EEPROM.read(eeprom_addr);
+  Serial.print("EEPROM Read Data: ");
+  Serial.println(eeprom_read_data);
+
+  connectToMQTT();
+#endif
 }
 
 void loop() {
@@ -368,7 +447,7 @@ void loop() {
   Serial.println();
   Serial.println("INL-D01 Main Loop");
   Serial.println("(C) 2023 Dignsys");
-  Serial.println();
+  Serial.printf("VERSION: %s\r\n\r\n", VERSION_INL_D01_FW);
 
   char c;
   unsigned long cur_millis = 0;
@@ -393,7 +472,7 @@ void loop() {
       Serial.println("Return to Main Loop!!!");
       c = 0;
     }
-#if (DISABLE_BLE_OP != 1) // Disable BLE
+#if (ENABLE_BLE_OP == 1) // Enable BLE
     if(!(sbt_count % 4)){
       if (deviceConnected) {
         Serial.printf("*** NOTIFY: %d ***\r\n", value);
@@ -423,7 +502,16 @@ void loop() {
       sub_task_illuminance();
     } else if(sbt_count == 7){
       sub_task_tof();
+    } 
+#if (ENABLE_MQTT_OP == 1)
+    else if(sbt_count == 9){
+      sub_tast_mqtt_pub();
     }
+    if (!mqtt_client.connected()) {
+      connectToMQTT();
+    }
+    mqtt_client.loop();
+#endif
 
     // wait until the interval
     while(1){
@@ -437,7 +525,7 @@ void loop() {
         ug_button_isr_detected = 0;
       }
       cur_millis = millis();
-      if((cur_millis - prev_millis) < 500){
+      if((cur_millis - prev_millis) < SINGLE_TASK_PERIOD){
         delay(10);
       } else {
         break;
@@ -867,6 +955,7 @@ uint16_t CRC16(const uint8_t *data, uint16_t len)
 {
     uint8_t nTemp; // CRC table index
     uint16_t crc = 0xFFFF; // Default value
+    uint8_t idx = 0;
 
     while (len--)
     {
@@ -904,35 +993,100 @@ void set_buzzer(int state){
   }
 }
 
+void crc32_update(const uint32_t data)
+{
+    uint32_t tbl_idx = 0;
+    tbl_idx = crc32_state ^ (data >> (0 * 4));
+    crc32_state = crc32_table[(tbl_idx & 0x0f)] ^ (crc32_state >> 4);
+    tbl_idx = crc32_state ^ (data >> (1 * 4));
+    crc32_state = crc32_table[(tbl_idx & 0x0f)] ^ (crc32_state >> 4);
+}
+
+void connectToMQTT(void) {
+
+  while (!mqtt_client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    long r = random(1000);
+    sprintf(mqtt_clientId, "clientId-%ld", r);
+    if (mqtt_client.connect(mqtt_clientId)) {
+      Serial.printf(" connected[%d]\r\n", r);
+      char topic[100];
+      snprintf(topic, sizeof(topic), "INLD01/%04X/%02X%02X%02X%02X%02X/%02X", sn_dev_address, 
+        sn_dev_id[0], sn_dev_id[1], sn_dev_id[2], sn_dev_id[3], sn_dev_id[4], sn_dev_location);
+      mqtt_client.subscribe(topic);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(mqtt_client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+void mqtt_callback(char* topic, byte* message, unsigned int length) {
+
+  String stMessage;
+  Serial.print("Message arrived on topic: ");
+  Serial.print(topic);
+  Serial.print(". Message: ");
+
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)message[i]);
+    stMessage += (char)message[i];
+  }
+  Serial.println();
+  if (String(topic) == "INLD01/0001/0000000000/01") {
+    
+    Serial.print("Changing output to ");
+    if(stMessage == "on"){
+      Serial.println("on");
+      digitalWrite(PIN_BUZZER, HIGH);
+    }
+    else if(stMessage == "off"){
+      Serial.println("off");
+      digitalWrite(PIN_BUZZER, LOW);
+    }
+  }
+}
+
 void sub_task_flame(void) {
 
-  gv_flame = digitalRead(PIN_PT);
+#ifdef INL_NOT_USING_SENSOR
+  return;
+#endif
+
+  gvi_flame = gv_flame = digitalRead(PIN_PT);
   Serial.printf("Flame Sensor: %d\r\n", gv_flame);
 
 }
 
 void sub_task_three_axis(void) {
 
-#if 1
   inv_imu_sensor_event_t imu_event;
+
+#ifdef INL_NOT_USING_SENSOR
+  return;
+#endif
 
   IMU.getDataFromRegisters(&imu_event);
 
-  gv_axis_x = imu_event.accel[0];
-  gv_axis_y = imu_event.accel[1];
-  gv_axis_z = imu_event.accel[2];
+  gv_axis_x = gvf_acc_x = imu_event.accel[0];
+  gv_axis_y = gvf_acc_y = imu_event.accel[1];
+  gv_axis_z = gvf_acc_z = imu_event.accel[2];
+  gvf_gyro_x = imu_event.gyro[0];
+  gvf_gyro_y = imu_event.gyro[1];
+  gvf_gyro_z = imu_event.gyro[2];
   Serial.printf("3 Axis Sensor: %d, %d, %d\r\n", gv_axis_x, gv_axis_y, gv_axis_z);
-#else
-  gv_axis_x = 120;
-  gv_axis_y = 10;
-  gv_axis_z = -10;
-#endif
+
 }
 
 void sub_task_gas(void) {
 
-#if 1
-  gv_gas = analogRead(PIN_MQ2_AO);
+#ifdef INL_NOT_USING_SENSOR
+  return;
+#endif
+
+  gvi_gas = gv_gas = analogRead(PIN_MQ2_AO);
 
   if(!mq2_warm_up_end){
     if(millis() > sys_start_millis + MQ2_WARM_UP_TIME){
@@ -945,19 +1099,21 @@ void sub_task_gas(void) {
   if(!mq2_warm_up_end){
     gv_gas = 0;
   }
-#else
-  gv_gas = 320;
-#endif
+
 }
 
 void sub_task_temperature(void) {
 
   sensors_event_t humidity, temp;
 
+#ifdef INL_NOT_USING_SENSOR
+  return;
+#endif
+
   sht4.getEvent(&humidity, &temp);// populate temp and humidity objects with fresh data
 
-  gv_temperature = (int8_t) temp.temperature;
-  gv_humidity = (uint8_t) humidity.relative_humidity;
+  gv_temperature = (int8_t) (gvf_temperature = temp.temperature);
+  gv_humidity = (uint8_t) (gvf_humidity = humidity.relative_humidity);
 
   Serial.printf("Temperature: %d, Humidity: %d\r\n", gv_temperature, gv_humidity);
 
@@ -971,9 +1127,13 @@ void sub_task_illuminance(void) {
   int val = 0;
   static uint8_t mes_start = 1;
 
+#ifdef INL_NOT_USING_SENSOR
+  return;
+#endif
+
   if(mes_start){
     mes_start = 0;
-    i2c_write(0x10, 0x00, data, 2);
+    i2c_write(0x10, 0x00, data, 2);  // start measurement
   }
 
   // white
@@ -993,10 +1153,70 @@ void sub_task_illuminance(void) {
 
 void sub_task_tof(void) {
 
+#ifdef INL_NOT_USING_SENSOR
+  return;
+#endif
+
   if (tof.isDataReady()) {
-    gv_tof = tof.getDistance_mm();
+    gvf_tof = gv_tof = tof.getDistance_mm();
   }
   Serial.printf("TOF Sensor: %d\r\n", gv_tof);
+}
+
+void sub_tast_mqtt_pub(void) {
+
+  char topic[100];
+  snprintf(topic, sizeof(topic), "INLD01/%04X/%02X%02X%02X%02X%02X/%02X", sn_dev_address, 
+    sn_dev_id[0], sn_dev_id[1], sn_dev_id[2], sn_dev_id[3], sn_dev_id[4], sn_dev_location);
+
+#ifdef INL_NOT_USING_SENSOR
+  gvf_acc_x = 2000.;
+  gvf_acc_y = 100.;
+  gvf_acc_z = -100.;
+  gvf_gyro_x = 10.;
+  gvf_gyro_y = 20.;
+  gvf_gyro_z = 30.;
+  gvf_temperature = 27.;
+  gvf_humidity = 12.;
+  gvi_flame = 1.;
+  gvi_gas = 34;
+  gvf_tof = 567.;
+#endif
+
+  DynamicJsonDocument doc(250);
+
+  doc["ax"] = gvf_acc_x;
+  doc["ay"] = gvf_acc_y;
+  doc["az"] = gvf_acc_z;
+  doc["gx"] = gvf_gyro_x;
+  doc["gy"] = gvf_gyro_y;
+  doc["gz"] = gvf_gyro_z;
+  doc["mq2"] = gvi_gas;
+  doc["tem"] = gvf_temperature;
+  doc["hum"] = gvf_humidity;
+  doc["light"] = gv_illuminance;
+  doc["flame"] = gvi_flame;
+  doc["tof"] = gvf_tof;
+
+  String jsonStringWithCRC;
+  serializeJson(doc, jsonStringWithCRC);
+
+  for (size_t i = 0; i < jsonStringWithCRC.length(); i++) {
+    crc32_update(jsonStringWithCRC[i]);
+  }
+  crc32_value = ~crc32_state; 
+
+  doc["crc"] = crc32_value;
+
+  jsonStringWithCRC = "";
+  serializeJson(doc, jsonStringWithCRC);
+
+  if (mqtt_client.publish(topic, jsonStringWithCRC.c_str())) {
+    Serial.println("Message sent successfully.");
+  } else {
+    Serial.println("Error sending message.");
+  }
+
 }
 
 uint8_t get_flame(void) {

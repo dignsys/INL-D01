@@ -18,8 +18,9 @@
 #include <PubSubClient.h>
 #include <EEPROM.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 
-#define VERSION_INL_D01_FW  "20231213"
+#define VERSION_INL_D01_FW  "20231221"
 
 #define PIN_BOOT            0
 #define PIN_BAT             2
@@ -43,7 +44,7 @@ uint8_t caliDataBuf[14] = {0x41,0x57,0x01,0xFD,0x04,0x00,0x00,0x00,0x00,0x00,0x0
 #define ENABLE_BLE_OP     1
 #define BLE_FORMAT_TEST   0
 #define ENABLE_MQTT_OP    1
-#define SINGLE_TASK_PERIOD  250 // 20 tasks * 250 = 5 sec (full task period)
+#define SINGLE_TASK_PERIOD  250 // 20 tasks * 250 msec = 5 sec (full task period)
 //#define INL_NOT_USING_SENSOR
 
 #define DEVICE_NAME            "ESP32"
@@ -212,19 +213,47 @@ uint32_t crc32_state = 0;
 const char* ssid = "DIGNSYS LAB 2G"; // WiFi SSID
 const char* password = "***"; // WiFi Password
 const char* mqttServer = "broker.emqx.io";
-//const char* mqttServer = "192.168.1.***";
 const int mqtt_port = 1883;
 char mqtt_clientId[50];
 WiFiClient espClient;
 PubSubClient mqtt_client(espClient);
-uint16_t sn_dev_address = 0x0001;
-uint8_t sn_dev_id[5] = {0x00, 0x00, 0x00, 0x00, 0x01};
-uint8_t sn_dev_location = 0x01;
 
 #define EEPROM_SIZE 512
 int eeprom_addr = 0;
 byte eeprom_write_data;
 byte eeprom_read_data;
+
+#define EEPROM_ADDR_SN_NUM  16
+#define EEPROM_ADDR_SSID    32
+#define EEPROM_ADDR_PASSWD  64
+#define EEPROM_ADDR_SERVER  96
+#define EEPROM_ADDR_SN_NUM_SZ  5
+#define EEPROM_ADDR_SSID_SZ    32
+#define EEPROM_ADDR_PASSWD_SZ  32
+#define EEPROM_ADDR_SERVER_SZ  32
+uint8_t gv_id[EEPROM_ADDR_SN_NUM_SZ] = {0,};
+char gv_ssid[EEPROM_ADDR_SSID_SZ] = {0,};
+char gv_passwd[EEPROM_ADDR_PASSWD_SZ] = {0,};
+char gv_server[EEPROM_ADDR_SERVER_SZ] = {0,};
+uint16_t gv_address = 0x0001;
+uint8_t gv_location = 0x01;
+void get_eeprom_data(void);
+void set_eeprom_data_sn_num(void);
+void set_eeprom_data_ssid(void);
+void set_eeprom_data_passwd(void);
+void set_eeprom_data_server(void);
+uint8_t wifi_connected = 0;
+
+Preferences prefs;
+
+typedef struct {
+  uint8_t gv_id[EEPROM_ADDR_SN_NUM_SZ];
+  char gv_ssid[EEPROM_ADDR_SSID_SZ];
+  char gv_passwd[EEPROM_ADDR_PASSWD_SZ];
+  char gv_server[EEPROM_ADDR_SERVER_SZ];
+} settings_t;
+
+settings_t gv_settings;
 
 void connectToMQTT(void);
 void mqtt_callback(char* topic, byte* message, unsigned int length);
@@ -241,6 +270,7 @@ void sub_test_s(void);  // LittleFS Format Test
 void sub_test_t(void);  // L-51POPT1D2 Test
 void sub_test_u(void);  // Buzzer Test
 void sub_test_v(void);  // BLE iBeacon Test
+void sub_test_w(void);  // Settings
 void sub_test_loop(void);
 
 int i2c_read(uint8_t addr, uint8_t reg, uint8_t* pdata, uint8_t dlen);
@@ -253,7 +283,7 @@ void sub_task_gas(void);
 void sub_task_temperature(void);
 void sub_task_illuminance(void);
 void sub_task_tof(void);
-void sub_tast_mqtt_pub(void);
+void sub_task_mqtt_pub(void);
 
 void isr_button(void);
 void set_buzzer(int state);
@@ -271,6 +301,7 @@ uint16_t get_tof(void);
 void setup() {
 
   int ret;
+  char c;
   // put your setup code here, to run once:
   Wire.begin();
   Wire.setClock(400000);  // 1MHz, 400kHz, 100kHz
@@ -412,22 +443,7 @@ void setup() {
 
   attachInterrupt(PIN_BUTTON, isr_button, FALLING);
 
-#if (ENABLE_MQTT_OP == 1)
-  Serial.print("Connecting to WiFi");
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(200);
-    Serial.print(".");
-  }
-
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-
-  mqtt_client.setServer(mqttServer, mqtt_port);
-  mqtt_client.setCallback(mqtt_callback);
-
+#if 0
   EEPROM.begin(EEPROM_SIZE);
 
   eeprom_write_data = 42;
@@ -438,7 +454,88 @@ void setup() {
   Serial.print("EEPROM Read Data: ");
   Serial.println(eeprom_read_data);
 
-  connectToMQTT();
+  get_eeprom_data();
+  if(gv_ssid[0]) {
+    Serial.printf("EEPROM_DATA_SSID: %s\r\n", gv_ssid);
+  }
+  if(gv_passwd[0]) {
+    Serial.printf("EEPROM_DATA_PASSWD: %s\r\n", gv_passwd);
+  }
+  if(gv_server[0]) {
+    Serial.printf("EEPROM_DATA_SERVER: %s\r\n", gv_server);
+  }
+  if(gv_id[0] | gv_id[1] | gv_id[2] | gv_id[3] | gv_id[4]) {
+    Serial.printf("EEPROM_DATA_ID: %02x, %02x, %02x, %02x, %02x\r\n", gv_id[0], gv_id[1], gv_id[2], gv_id[3] , gv_id[4]);
+  }
+#endif
+
+  uint8_t plen;
+  uint8_t rdata[EEPROM_ADDR_SN_NUM_SZ+EEPROM_ADDR_SSID_SZ+EEPROM_ADDR_PASSWD_SZ+EEPROM_ADDR_SERVER_SZ];
+  prefs.begin("settings");
+  memset((void*) &gv_settings, 0x00, sizeof(gv_settings));
+  if(prefs.isKey("settings")) {
+    plen = prefs.getBytesLength("settings");
+    if(plen){
+      prefs.getBytes("settings", rdata, plen);
+      memcpy((void*)&gv_settings, rdata, plen);
+      Serial.printf("ID: %02x, %02x, %02x, %02x, %02x\r\n", gv_settings.gv_id[0], gv_settings.gv_id[1], 
+        gv_settings.gv_id[2], gv_settings.gv_id[3], gv_settings.gv_id[4]);
+      Serial.printf("SSID: %s\r\n", gv_settings.gv_ssid);
+      Serial.printf("PASSWD: %s\r\n", gv_settings.gv_passwd);
+      Serial.printf("Server: %s\r\n", gv_settings.gv_server);
+    }
+    for(int i = 0; i < 5; i++){
+      gv_id[i] = gv_settings.gv_id[i];
+    }
+  }
+
+  if(isalnum(gv_settings.gv_ssid[0])){
+    strcpy(gv_ssid, gv_settings.gv_ssid);
+  } else {
+    strlcpy(gv_ssid, ssid, strlen(ssid));
+  }
+
+  if(isalnum(gv_settings.gv_passwd[0])){
+    strcpy(gv_passwd, gv_settings.gv_passwd);
+  } else {
+    strlcpy(gv_passwd, password, strlen(password));
+  }
+
+  if(isalnum(gv_settings.gv_server[0])){
+    strcpy(gv_server, gv_settings.gv_server);
+  } else {
+    strlcpy(gv_server, mqttServer, strlen(mqttServer));
+  }
+
+  Serial.printf("ID: %02x, %02x, %02x, %02x, %02x\r\n", gv_id[0], gv_id[1], gv_id[2], gv_id[3], gv_id[4]);
+  Serial.printf("SSID: %s\r\n", gv_ssid);
+  Serial.printf("PASSWD: %s\r\n", gv_passwd);
+  Serial.printf("Server: %s\r\n", gv_server);
+
+#if (ENABLE_MQTT_OP == 1)
+  Serial.print("Connecting to WiFi");
+  WiFi.begin(gv_ssid, gv_passwd);
+  while (WiFi.status() != WL_CONNECTED) {
+    if(Serial.available()) {
+      c = Serial.read();
+      if(c == 27) break;
+    }
+    delay(200);
+    Serial.print(".");
+  }
+  if(WiFi.status() == WL_CONNECTED){
+    wifi_connected = 1;
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  mqtt_client.setServer(gv_server, mqtt_port);
+  mqtt_client.setCallback(mqtt_callback);
+
+  if(wifi_connected) connectToMQTT();
 #endif
 }
 
@@ -505,12 +602,14 @@ void loop() {
     } 
 #if (ENABLE_MQTT_OP == 1)
     else if(sbt_count == 9){
-      sub_tast_mqtt_pub();
+      sub_task_mqtt_pub();
     }
-    if (!mqtt_client.connected()) {
-      connectToMQTT();
+    if(wifi_connected){
+      if (!mqtt_client.connected()) {
+        connectToMQTT();
+      }
+      mqtt_client.loop();
     }
-    mqtt_client.loop();
 #endif
 
     // wait until the interval
@@ -545,7 +644,7 @@ void sub_test_loop(void){
   Serial.println();
   Serial.println("INL-D01 Sub-Testing");
   Serial.println("(C) 2023 Dignsys");
-  Serial.println();
+  Serial.printf("VERSION: %s\r\n\r\n", VERSION_INL_D01_FW);
 
   char c;
   while(c != 'x') {
@@ -595,6 +694,9 @@ void sub_test_loop(void){
         break;
       case 'v':
         sub_test_v();
+        break;
+      case 'w':
+        sub_test_w();
         break;
       default:
         break;
@@ -1011,8 +1113,8 @@ void connectToMQTT(void) {
     if (mqtt_client.connect(mqtt_clientId)) {
       Serial.printf(" connected[%d]\r\n", r);
       char topic[100];
-      snprintf(topic, sizeof(topic), "INLD01/%04X/%02X%02X%02X%02X%02X/%02X", sn_dev_address, 
-        sn_dev_id[0], sn_dev_id[1], sn_dev_id[2], sn_dev_id[3], sn_dev_id[4], sn_dev_location);
+      snprintf(topic, sizeof(topic), "INLD01/%04X/%02X%02X%02X%02X%02X/%02X", gv_address, 
+        gv_id[0], gv_id[1], gv_id[2], gv_id[3], gv_id[4], gv_location);
       mqtt_client.subscribe(topic);
     } else {
       Serial.print("failed, rc=");
@@ -1047,6 +1149,50 @@ void mqtt_callback(char* topic, byte* message, unsigned int length) {
       digitalWrite(PIN_BUZZER, LOW);
     }
   }
+}
+
+void get_eeprom_data(void) {
+
+  uint8_t rdata;
+
+  for(int i = 0; i < 5; i++){
+    gv_id[i] = EEPROM.readByte(EEPROM_ADDR_SN_NUM+i);
+  }
+
+  rdata = EEPROM.readByte(EEPROM_ADDR_SSID);
+  if(isalnum(rdata)){
+    EEPROM.readBytes(EEPROM_ADDR_SSID, gv_ssid, sizeof(gv_ssid));
+  }
+
+  rdata = EEPROM.readByte(EEPROM_ADDR_PASSWD);
+  if(isalnum(rdata)){
+    EEPROM.readBytes(EEPROM_ADDR_PASSWD, gv_passwd, sizeof(gv_passwd));
+  }
+
+  rdata = EEPROM.readByte(EEPROM_ADDR_SERVER);
+  if(isalnum(rdata)){
+    EEPROM.readBytes(EEPROM_ADDR_SERVER, gv_server, sizeof(gv_server));
+  }
+}
+
+void set_eeprom_data_sn_num(void) {
+
+  EEPROM.writeBytes(EEPROM_ADDR_SN_NUM, gv_id, sizeof(gv_id));
+}
+
+void set_eeprom_data_ssid(void) {
+
+  EEPROM.writeBytes(EEPROM_ADDR_SSID, gv_ssid, sizeof(gv_ssid));
+}
+
+void set_eeprom_data_passwd(void) {
+
+  EEPROM.writeBytes(EEPROM_ADDR_PASSWD, gv_passwd, sizeof(gv_passwd));
+}
+
+void set_eeprom_data_server(void) {
+
+  EEPROM.writeBytes(EEPROM_ADDR_SERVER, gv_server, sizeof(gv_server));
 }
 
 void sub_task_flame(void) {
@@ -1163,11 +1309,11 @@ void sub_task_tof(void) {
   Serial.printf("TOF Sensor: %d\r\n", gv_tof);
 }
 
-void sub_tast_mqtt_pub(void) {
+void sub_task_mqtt_pub(void) {
 
   char topic[100];
-  snprintf(topic, sizeof(topic), "INLD01/%04X/%02X%02X%02X%02X%02X/%02X", sn_dev_address, 
-    sn_dev_id[0], sn_dev_id[1], sn_dev_id[2], sn_dev_id[3], sn_dev_id[4], sn_dev_location);
+  snprintf(topic, sizeof(topic), "INLD01/%04X/%02X%02X%02X%02X%02X/%02X", gv_address, 
+    gv_id[0], gv_id[1], gv_id[2], gv_id[3], gv_id[4], gv_location);
 
 #ifdef INL_NOT_USING_SENSOR
   gvf_acc_x = 2000.;
@@ -1803,7 +1949,6 @@ void sub_test_h(void) {
 
 void sub_test_s(void) {
 
-  uint8_t data;
   char c;
   int r_data = 0;
   String strLog;
@@ -1928,5 +2073,223 @@ void sub_test_v(void) {
       delay(3000);
     }
     delay(2000);
+  }
+}
+
+void sub_test_w(void) {
+
+  char c;
+  uint8_t id_idx = 0;
+  int8_t id_pnt = 0;
+  uint8_t id_tmp[5] = {0,};
+ 
+  Serial.println("Sub-test W - Settings");
+
+  Serial.print("Input Test Number: ");
+  while(1){
+    if(Serial.available()) {
+      c = Serial.read();
+      if(isalnum(c)) break;
+    }
+    delay(100);
+  }
+  Serial.println(c);
+
+  if(c == '0') {  // Clear EEPROM
+#if 0
+    for(int i = 0; i < EEPROM_SIZE; i++){
+      EEPROM.writeByte(i, 0x00);
+    }
+#else
+    memset((void*) &gv_settings, 0x00, sizeof(gv_settings));
+    prefs.clear();
+#endif
+  } else if(c == '1') {  // WLAN settings
+    Serial.print("[WLAN] Enter SSID: ");
+    char cbuf[128] = {0,};
+    int idx = 0;
+    while(1){
+      if(Serial.available()) {
+        cbuf[idx] = Serial.read();
+        Serial.print(cbuf[idx]);
+        if(cbuf[idx]=='\n') {
+          cbuf[idx] = 0;
+          Serial.println();
+          break;
+        } else if(cbuf[idx]=='\r'){
+          cbuf[idx] = 0;
+        }
+        idx++;
+      }
+    }
+    Serial.printf("Input Data String: %s\r\n", cbuf);
+    if(cbuf[0]){
+      memset(gv_ssid, 0x00, sizeof(gv_ssid));
+      strcpy(gv_ssid, cbuf);
+      set_eeprom_data_ssid();
+      memset(gv_settings.gv_ssid, 0x00, EEPROM_ADDR_SSID_SZ);
+      strcpy(gv_settings.gv_ssid, cbuf);
+      prefs.putBytes("settings", (void*) &gv_settings, sizeof(gv_settings));
+    }
+
+    Serial.print("[WLAN] Enter PASSWD: ");
+    memset(cbuf, 0x00, sizeof(cbuf));
+    idx = 0;
+    while(1){
+      if(Serial.available()) {
+        cbuf[idx] = Serial.read();
+        Serial.print(cbuf[idx]);
+        if(cbuf[idx]=='\n') {
+          cbuf[idx] = 0;
+          Serial.println();
+          break;
+        } else if(cbuf[idx]=='\r'){
+          cbuf[idx] = 0;
+        }
+        idx++;
+      }
+    }
+    Serial.printf("Input Data String: %s\r\n", cbuf);
+    if(cbuf[0]){
+      memset(gv_passwd, 0x00, sizeof(gv_passwd));
+      strcpy(gv_passwd, cbuf);
+      set_eeprom_data_passwd();
+      memset(gv_settings.gv_passwd, 0x00, EEPROM_ADDR_PASSWD_SZ);
+      strcpy(gv_settings.gv_passwd, cbuf);
+      prefs.putBytes("settings", (void*) &gv_settings, sizeof(gv_settings));
+    }
+  } else if(c == '2') {  // Server settings
+    Serial.print("[Server] Enter IP: ");
+    char cbuf[128] = {0,};
+    int idx = 0;
+    while(1){
+      if(Serial.available()) {
+        cbuf[idx] = Serial.read();
+        Serial.print(cbuf[idx]);
+        if(cbuf[idx]=='\n') {
+          cbuf[idx] = 0;
+          Serial.println();
+          break;
+        } else if(cbuf[idx]=='\r'){
+          cbuf[idx] = 0;
+        }
+        idx++;
+      }
+    }
+    Serial.printf("Input Data String: %s\r\n", cbuf);
+    if(cbuf[0]){
+      memset(gv_server, 0x00, sizeof(gv_server));
+      strcpy(gv_server, cbuf);
+      set_eeprom_data_server();
+      memset(gv_settings.gv_server, 0x00, EEPROM_ADDR_SERVER_SZ);
+      strcpy(gv_settings.gv_server, cbuf);
+      prefs.putBytes("settings", (void*) &gv_settings, sizeof(gv_settings));
+    }
+  } else if(c == '3') {  // ID number settings
+    Serial.print("[Device] Enter ID: ");
+    char cbuf[128] = {0,};
+    int idx = 0;
+    while(1){
+      if(Serial.available()) {
+        cbuf[idx] = Serial.read();
+        Serial.print(cbuf[idx]);
+        if(cbuf[idx]=='\n') {
+          cbuf[idx] = 0;
+          Serial.println();
+          break;
+        } else if(cbuf[idx]=='\r'){
+          cbuf[idx] = 0;
+        }
+        idx++;
+      }
+    }
+    Serial.printf("Input Data String: %s\r\n", cbuf);
+    if(isalnum(cbuf[0])){
+      id_idx = 4;
+      id_pnt = strlen(cbuf) - 1;
+      while(1) {
+        if(id_pnt < 1) {
+          cbuf[id_pnt] = tolower(cbuf[id_pnt]);
+          if((cbuf[id_pnt] >= '0') && (cbuf[id_pnt] <= '9')) {
+            id_tmp[id_idx] = (cbuf[id_pnt] - '0');
+          } else if ((cbuf[id_pnt] >= 'a') && (cbuf[id_pnt] <= 'f')) {
+            id_tmp[id_idx] = (cbuf[id_pnt] - 'a' + 0xa);
+          } else {
+            Serial.println("Invalid Data String");
+            return;
+          }
+          break;
+        } else {
+          cbuf[id_pnt-1] = tolower(cbuf[id_pnt-1]);
+          if((cbuf[id_pnt-1] >= '0') && (cbuf[id_pnt-1] <= '9')) {
+            id_tmp[id_idx] = (cbuf[id_pnt-1] - '0')*0x10;
+          } else if ((cbuf[id_pnt-1] >= 'a') && (cbuf[id_pnt-1] <= 'f')) {
+            id_tmp[id_idx] = (cbuf[id_pnt-1] - 'a' + 0xa)*0x10;
+          } else {
+            Serial.println("Invalid Data String");
+            return;
+          }
+          cbuf[id_pnt] = tolower(cbuf[id_pnt]);
+          if((cbuf[id_pnt] >= '0') && (cbuf[id_pnt] <= '9')) {
+            id_tmp[id_idx] |= (cbuf[id_pnt] - '0');
+          } else if ((cbuf[id_pnt] >= 'a') && (cbuf[id_pnt] <= 'f')) {
+            id_tmp[id_idx] |= (cbuf[id_pnt] - 'a' + 0xa);
+          } else {
+            Serial.println("Invalid Data String");
+            return;
+          }
+          id_pnt -= 2;
+          id_idx--;
+          if(id_pnt < 0) break;
+        }
+      }
+
+      for(int i = 0; i < 5; i++){
+        gv_settings.gv_id[i] = gv_id[i] = id_tmp[i];
+      }
+      Serial.printf("Input ID: %02x, %02x, %02x, %02x, %02x\r\n", gv_id[0], gv_id[1], gv_id[2], gv_id[3], gv_id[4]);
+      set_eeprom_data_sn_num();
+      prefs.putBytes("settings", (void*) &gv_settings, sizeof(gv_settings));
+    }
+  } else if(c == '4') {
+#if 0
+    uint8_t rdata[32];
+    if(isalnum(EEPROM.readByte(EEPROM_ADDR_SSID))){
+      memset(rdata, 0x00, sizeof(rdata));
+      EEPROM.readBytes(EEPROM_ADDR_SSID, rdata, sizeof(rdata));
+      Serial.printf("SSID: %s\r\n", rdata);
+    }
+
+    if(isalnum(EEPROM.readByte(EEPROM_ADDR_PASSWD))){
+      memset(rdata, 0x00, sizeof(rdata));
+      EEPROM.readBytes(EEPROM_ADDR_PASSWD, rdata, sizeof(rdata));
+      Serial.printf("PASSWD: %s\r\n", rdata);
+    }
+
+    if(isalnum(EEPROM.readByte(EEPROM_ADDR_SERVER))){
+      memset(rdata, 0x00, sizeof(rdata));
+      EEPROM.readBytes(EEPROM_ADDR_SERVER, rdata, sizeof(rdata));
+      Serial.printf("SERVER: %s\r\n", rdata);
+    }
+#else
+    uint8_t rdata[EEPROM_ADDR_SN_NUM_SZ+EEPROM_ADDR_SSID_SZ+EEPROM_ADDR_PASSWD_SZ+EEPROM_ADDR_SERVER_SZ];
+    if(prefs.isKey("settings")){
+      size_t plen = prefs.getBytesLength("settings");
+      Serial.printf("plen: %d\r\n", plen);
+      prefs.getBytes("settings", rdata, plen);
+      prefs.isKey("settings");
+      memcpy((void*)&gv_settings, rdata, plen);
+      Serial.printf("ID: %02x, %02x, %02x, %02x, %02x\r\n", gv_settings.gv_id[0], gv_settings.gv_id[1], 
+        gv_settings.gv_id[2], gv_settings.gv_id[3], gv_settings.gv_id[4]);
+      Serial.printf("SSID: %s\r\n", gv_settings.gv_ssid);
+      Serial.printf("PASSWD: %s\r\n", gv_settings.gv_passwd);
+      Serial.printf("Server: %s\r\n", gv_settings.gv_server);
+    } else {
+      Serial.printf("settings is not initialized\r\n");
+    }
+#endif
+  } else {
+    Serial.println("Invalid Test Number");
+    return;
   }
 }

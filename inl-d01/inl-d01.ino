@@ -20,7 +20,7 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
-#define VERSION_INL_D01_FW  "20231221"
+#define VERSION_INL_D01_FW  "20240103"
 
 #define PIN_BOOT            0
 #define PIN_BAT             2
@@ -43,7 +43,7 @@ uint8_t caliDataBuf[14] = {0x41,0x57,0x01,0xFD,0x04,0x00,0x00,0x00,0x00,0x00,0x0
 
 #define ENABLE_BLE_OP     1
 #define BLE_FORMAT_TEST   0
-#define ENABLE_MQTT_OP    1
+#define ENABLE_MQTT_OP    0
 #define SINGLE_TASK_PERIOD  250 // 20 tasks * 250 msec = 5 sec (full task period)
 //#define INL_NOT_USING_SENSOR
 
@@ -113,9 +113,12 @@ uint8_t gv_flame = 0;
 int16_t gv_axis_x = 0;
 int16_t gv_axis_y = 0;
 int16_t gv_axis_z = 0;
+int16_t gv_gyro_x = 0;
+int16_t gv_gyro_y = 0;
+int16_t gv_gyro_z = 0;
 uint16_t gv_gas = 0;
-int8_t gv_temperature = 0;
-uint8_t gv_humidity = 0;
+int16_t gv_temperature = 0; // x100
+uint16_t gv_humidity = 0; // x100
 uint16_t gv_illuminance = 0;
 uint16_t gv_tof = 0;
 float gvf_acc_x = 0.;
@@ -133,6 +136,8 @@ float gvf_tof = 0.;
 void init_service(void);
 void init_beacon(void);
 void update_beacon(void);
+void update_beacon_a(void);
+void update_beacon_b(void);
 int get_char(uint8_t in_byte, char* pout_bytes);
 bool checkCRC(const uint8_t *buf, uint16_t len);
 void setCRC(uint8_t *buf, uint16_t len);
@@ -191,7 +196,8 @@ int ug_button_isr_detected = 0;
 int ug_button_status = UG_BUTTON_PRESSED;
 unsigned long last_isr_millis = 0;
 
-#define MQ2_WARM_UP_TIME    300000  //1000*60*5  // 5 minutes
+//#define MQ2_WARM_UP_TIME    300000  //1000*60*5  // 5 minutes
+#define MQ2_WARM_UP_TIME    10000  //1000*10  // 10 seconds
 
 int mq2_warm_up_end = 0;
 unsigned long sys_start_millis = 0;
@@ -292,9 +298,12 @@ uint8_t get_flame(void);
 int16_t get_axis_x(void);
 int16_t get_axis_y(void);
 int16_t get_axis_z(void);
+int16_t get_gyro_x(void);
+int16_t get_gyro_y(void);
+int16_t get_gyro_z(void);
 uint16_t get_gas(void);
-int8_t get_temperature(void);
-uint8_t get_humidity(void);
+int16_t get_temperature(void);
+uint16_t get_humidity(void);
 uint16_t get_illuminance(void);
 uint16_t get_tof(void);
 
@@ -582,7 +591,11 @@ void loop() {
     if(!(sbt_count % 10)){
       if (!deviceConnected) {
         Serial.printf("*** Custom UUID Byte: %02x\r\n", custom_uuid_byte_0);
-        update_beacon();
+        if(sbt_count == 0){
+          update_beacon_a();
+        } else {
+          update_beacon_b();
+        }
         custom_uuid_byte_0++;
       }
     }
@@ -1034,6 +1047,419 @@ void update_beacon() {
   pAdvertising->start();
 }
 
+void update_beacon_a() {
+
+  BLEAdvertising* pAdvertising;
+  pAdvertising = pServer->getAdvertising();
+  pAdvertising->stop();
+  // iBeacon
+  BLEBeacon myBeacon;
+  myBeacon.setManufacturerId(0x4c00);
+  //myBeacon.setMajor(custom_uuid_byte_0);
+  //myBeacon.setMinor(0x00ff - custom_uuid_byte_0);
+  //Serial.printf("Update Major: %d, Minor: %d\r\n", custom_uuid_byte_0, 0x00ff - custom_uuid_byte_0);
+  myBeacon.setSignalPower(0xc5);
+#if 0
+  String myUUID(custom_beacon_uuid);
+  uint8_t tdata = 0;
+  tdata = (custom_uuid_byte_0 >> 4)&0x0f;
+  if((tdata >= 0) && (tdata <= 9)){
+    myUUID.setCharAt(0, tdata + '0'); 
+  } else {
+    myUUID.setCharAt(0, (tdata%10) + 'A');
+  }
+  tdata = (custom_uuid_byte_0)&0x0f;
+  if((tdata >= 0) && (tdata <= 9)){
+    myUUID.setCharAt(1, tdata + '0'); 
+  } else {
+    myUUID.setCharAt(1, (tdata%10) + 'A');
+  }
+  Serial.printf("myUUID: %c, %c\r\n", myUUID.charAt(0), myUUID.charAt(1));
+  Serial.printf("myUUID: %s\r\n", myUUID.c_str());
+  myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
+#elif 0
+  String myUUID(custom_beacon_uuid);
+  myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
+#elif 1
+  String myUUID(custom_beacon_uuid);
+  String myUUID_R(custom_beacon_uuid);
+  uint8_t tbdata = 0;
+  int8_t tbidata = 0;
+  uint16_t twdata = 0;
+  int16_t twidata = 0;
+  char tcdata[3] = {0,};
+  uint8_t tadata[20] = {0,};
+
+  // Identify char
+  tbdata = 'D'; 
+  tadata[0] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(0, tcdata[0]);
+  myUUID.setCharAt(1, tcdata[1]);
+  myUUID_R.setCharAt(34, tcdata[0]);
+  myUUID_R.setCharAt(35, tcdata[1]);
+  tbdata = 'S';
+  tadata[1] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(2, tcdata[0]);
+  myUUID.setCharAt(3, tcdata[1]);
+  myUUID_R.setCharAt(32, tcdata[0]);
+  myUUID_R.setCharAt(33, tcdata[1]);
+  tbdata = 'I';
+  tadata[2] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(4, tcdata[0]);
+  myUUID.setCharAt(5, tcdata[1]);
+  myUUID_R.setCharAt(30, tcdata[0]);
+  myUUID_R.setCharAt(31, tcdata[1]);
+
+  // N.A.
+  tbdata = 0;
+  tadata[3] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(6, tcdata[0]);
+  myUUID.setCharAt(7, tcdata[1]);
+  myUUID_R.setCharAt(28, tcdata[0]);
+  myUUID_R.setCharAt(29, tcdata[1]);
+
+  // Acc-X
+  twidata = get_axis_x(); //120;
+  tbdata = ((twidata >> 8)&0x00ff);
+  tadata[4] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(9, tcdata[0]);
+  myUUID.setCharAt(10, tcdata[1]);
+  myUUID_R.setCharAt(26, tcdata[0]);
+  myUUID_R.setCharAt(27, tcdata[1]);
+  tbdata = ((twidata >> 0)&0x00ff);
+  tadata[5] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(11, tcdata[0]);
+  myUUID.setCharAt(12, tcdata[1]);
+  myUUID_R.setCharAt(24, tcdata[0]);
+  myUUID_R.setCharAt(25, tcdata[1]);
+
+  // Acc-Y
+  twidata = get_axis_y(); //10;
+  tbdata = ((twidata >> 8)&0x00ff);
+  tadata[6] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(14, tcdata[0]);
+  myUUID.setCharAt(15, tcdata[1]);
+  myUUID_R.setCharAt(21, tcdata[0]);
+  myUUID_R.setCharAt(22, tcdata[1]);
+  tbdata = ((twidata >> 0)&0x00ff);
+  tadata[7] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(16, tcdata[0]);
+  myUUID.setCharAt(17, tcdata[1]);
+  myUUID_R.setCharAt(19, tcdata[0]);
+  myUUID_R.setCharAt(20, tcdata[1]);
+
+  // Acc-Z
+  twidata = get_axis_z(); //-10;
+  tbdata = ((twidata >> 8)&0x00ff);
+  tadata[8] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(19, tcdata[0]);
+  myUUID.setCharAt(20, tcdata[1]);
+  myUUID_R.setCharAt(16, tcdata[0]);
+  myUUID_R.setCharAt(17, tcdata[1]);
+  tbdata = ((twidata >> 0)&0x00ff);
+  tadata[9] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(21, tcdata[0]);
+  myUUID.setCharAt(22, tcdata[1]);
+  myUUID_R.setCharAt(14, tcdata[0]);
+  myUUID_R.setCharAt(15, tcdata[1]);
+
+  // Gyro-X
+  twidata = get_gyro_x(); //5;
+  tbdata = ((twidata >> 8)&0x00ff);
+  tadata[10] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(24, tcdata[0]);
+  myUUID.setCharAt(25, tcdata[1]);
+  myUUID_R.setCharAt(11, tcdata[0]);
+  myUUID_R.setCharAt(12, tcdata[1]);
+  tbdata = ((twidata >> 0)&0x00ff);
+  tadata[11] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(26, tcdata[0]);
+  myUUID.setCharAt(27, tcdata[1]);
+  myUUID_R.setCharAt(9, tcdata[0]);
+  myUUID_R.setCharAt(10, tcdata[1]);
+
+  // Gyro-Y
+  twidata = get_gyro_y(); //-3;
+  tbdata = ((twidata >> 8)&0x00ff);
+  tadata[12] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(28, tcdata[0]);
+  myUUID.setCharAt(29, tcdata[1]);
+  myUUID_R.setCharAt(6, tcdata[0]);
+  myUUID_R.setCharAt(7, tcdata[1]);
+  tbdata = ((twidata >> 0)&0x00ff);
+  tadata[13] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(30, tcdata[0]);
+  myUUID.setCharAt(31, tcdata[1]);
+  myUUID_R.setCharAt(4, tcdata[0]);
+  myUUID_R.setCharAt(5, tcdata[1]);
+
+  // Gyro-Z
+  twidata = get_gyro_z(); //-7;
+  tbdata = ((twidata >> 8)&0x00ff);
+  tadata[14] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(32, tcdata[0]);
+  myUUID.setCharAt(33, tcdata[1]);
+  myUUID_R.setCharAt(2, tcdata[0]);
+  myUUID_R.setCharAt(3, tcdata[1]);
+  tbdata = ((twidata >> 0)&0x00ff);
+  tadata[15] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(34, tcdata[0]);
+  myUUID.setCharAt(35, tcdata[1]);
+  myUUID_R.setCharAt(0, tcdata[0]);
+  myUUID_R.setCharAt(1, tcdata[1]);
+
+  // Type
+  tbdata = 'A';
+  twdata = tbdata*0x100 + 'A';
+  tadata[16] = tbdata;
+  tadata[17] = tbdata;
+  myBeacon.setMajor(twdata);
+
+  // CRC
+  setCRC(tadata, 20);
+  twdata = tadata[18]*0x100;
+  twdata += tadata[19];
+  //twdata = 0xabcd;
+  myBeacon.setMinor(twdata);
+  Serial.printf("Major: 0x%04x, Minor: 0x%04x\r\n", myBeacon.getMajor(), twdata);
+  Serial.printf("myUUID: %s\r\n", myUUID.c_str());
+  //myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
+  myBeacon.setProximityUUID(BLEUUID(myUUID_R.c_str()));
+#else
+  myBeacon.setProximityUUID(BLEUUID(BEACON_UUID_REV));
+#endif
+
+  BLEAdvertisementData advertisementData;
+  advertisementData.setFlags(0x1A);
+  advertisementData.setManufacturerData(myBeacon.getData());
+  pAdvertising->setAdvertisementData(advertisementData);
+
+  pAdvertising->start();
+}
+
+void update_beacon_b() {
+
+  BLEAdvertising* pAdvertising;
+  pAdvertising = pServer->getAdvertising();
+  pAdvertising->stop();
+  // iBeacon
+  BLEBeacon myBeacon;
+  myBeacon.setManufacturerId(0x4c00);
+  //myBeacon.setMajor(custom_uuid_byte_0);
+  //myBeacon.setMinor(0x00ff - custom_uuid_byte_0);
+  //Serial.printf("Update Major: %d, Minor: %d\r\n", custom_uuid_byte_0, 0x00ff - custom_uuid_byte_0);
+  myBeacon.setSignalPower(0xc5);
+#if 0
+  String myUUID(custom_beacon_uuid);
+  uint8_t tdata = 0;
+  tdata = (custom_uuid_byte_0 >> 4)&0x0f;
+  if((tdata >= 0) && (tdata <= 9)){
+    myUUID.setCharAt(0, tdata + '0'); 
+  } else {
+    myUUID.setCharAt(0, (tdata%10) + 'A');
+  }
+  tdata = (custom_uuid_byte_0)&0x0f;
+  if((tdata >= 0) && (tdata <= 9)){
+    myUUID.setCharAt(1, tdata + '0'); 
+  } else {
+    myUUID.setCharAt(1, (tdata%10) + 'A');
+  }
+  Serial.printf("myUUID: %c, %c\r\n", myUUID.charAt(0), myUUID.charAt(1));
+  Serial.printf("myUUID: %s\r\n", myUUID.c_str());
+  myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
+#elif 0
+  String myUUID(custom_beacon_uuid);
+  myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
+#elif 1
+  String myUUID(custom_beacon_uuid);
+  String myUUID_R(custom_beacon_uuid);
+  uint8_t tbdata = 0;
+  int8_t tbidata = 0;
+  uint16_t twdata = 0;
+  int16_t twidata = 0;
+  char tcdata[3] = {0,};
+  uint8_t tadata[20] = {0,};
+
+  // Identify char
+  tbdata = 'D'; 
+  tadata[0] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(0, tcdata[0]);
+  myUUID.setCharAt(1, tcdata[1]);
+  myUUID_R.setCharAt(34, tcdata[0]);
+  myUUID_R.setCharAt(35, tcdata[1]);
+  tbdata = 'S';
+  tadata[1] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(2, tcdata[0]);
+  myUUID.setCharAt(3, tcdata[1]);
+  myUUID_R.setCharAt(32, tcdata[0]);
+  myUUID_R.setCharAt(33, tcdata[1]);
+  tbdata = 'I';
+  tadata[2] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(4, tcdata[0]);
+  myUUID.setCharAt(5, tcdata[1]);
+  myUUID_R.setCharAt(30, tcdata[0]);
+  myUUID_R.setCharAt(31, tcdata[1]);
+
+  // N.A.
+  tbdata = 0;
+  tadata[3] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(6, tcdata[0]);
+  myUUID.setCharAt(7, tcdata[1]);
+  myUUID_R.setCharAt(28, tcdata[0]);
+  myUUID_R.setCharAt(29, tcdata[1]);
+
+  // Temperature
+  twidata = get_temperature(); //27;
+  tbdata = ((twidata >> 8)&0x00ff);
+  tadata[4] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(9, tcdata[0]);
+  myUUID.setCharAt(10, tcdata[1]);
+  myUUID_R.setCharAt(26, tcdata[0]);
+  myUUID_R.setCharAt(27, tcdata[1]);
+  tbdata = ((twidata >> 0)&0x00ff);
+  tadata[5] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(11, tcdata[0]);
+  myUUID.setCharAt(12, tcdata[1]);
+  myUUID_R.setCharAt(24, tcdata[0]);
+  myUUID_R.setCharAt(25, tcdata[1]);
+
+  // Humidity
+  twdata = get_humidity(); //25;
+  tbdata = ((twdata >> 8)&0x00ff);
+  tadata[6] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(14, tcdata[0]);
+  myUUID.setCharAt(15, tcdata[1]);
+  myUUID_R.setCharAt(21, tcdata[0]);
+  myUUID_R.setCharAt(22, tcdata[1]);
+  tbdata = ((twdata >> 0)&0x00ff);
+  tadata[7] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(16, tcdata[0]);
+  myUUID.setCharAt(17, tcdata[1]);
+  myUUID_R.setCharAt(19, tcdata[0]);
+  myUUID_R.setCharAt(20, tcdata[1]);
+
+  // LUX
+  twdata = get_illuminance(); //1200;
+  tbdata = ((twdata >> 8)&0x00ff);
+  tadata[8] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(19, tcdata[0]);
+  myUUID.setCharAt(20, tcdata[1]);
+  myUUID_R.setCharAt(16, tcdata[0]);
+  myUUID_R.setCharAt(17, tcdata[1]);
+  tbdata = ((twdata >> 0)&0x00ff);
+  tadata[9] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(21, tcdata[0]);
+  myUUID.setCharAt(22, tcdata[1]);
+  myUUID_R.setCharAt(14, tcdata[0]);
+  myUUID_R.setCharAt(15, tcdata[1]);
+
+  // MQ-2
+  twdata = get_gas(); //320;
+  tbdata = ((twdata >> 8)&0x00ff);
+  tadata[10] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(24, tcdata[0]);
+  myUUID.setCharAt(25, tcdata[1]);
+  myUUID_R.setCharAt(11, tcdata[0]);
+  myUUID_R.setCharAt(12, tcdata[1]);
+  tbdata = ((twdata >> 0)&0x00ff);
+  tadata[11] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(26, tcdata[0]);
+  myUUID.setCharAt(27, tcdata[1]);
+  myUUID_R.setCharAt(9, tcdata[0]);
+  myUUID_R.setCharAt(10, tcdata[1]);
+
+  // TOF
+  twdata = get_tof(); //1500;
+  tbdata = ((twdata >> 8)&0x00ff);
+  tadata[12] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(28, tcdata[0]);
+  myUUID.setCharAt(29, tcdata[1]);
+  myUUID_R.setCharAt(6, tcdata[0]);
+  myUUID_R.setCharAt(7, tcdata[1]);
+  tbdata = ((twdata >> 0)&0x00ff);
+  tadata[13] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(30, tcdata[0]);
+  myUUID.setCharAt(31, tcdata[1]);
+  myUUID_R.setCharAt(4, tcdata[0]);
+  myUUID_R.setCharAt(5, tcdata[1]);
+
+  // Flame
+  tbdata = get_flame(); //0;
+  tadata[14] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(32, tcdata[0]);
+  myUUID.setCharAt(33, tcdata[1]);
+  myUUID_R.setCharAt(2, tcdata[0]);
+  myUUID_R.setCharAt(3, tcdata[1]);
+
+  // N.A.
+  tbdata = 0;
+  tadata[15] = tbdata;
+  get_char(tbdata, tcdata);
+  myUUID.setCharAt(34, tcdata[0]);
+  myUUID.setCharAt(35, tcdata[1]);
+  myUUID_R.setCharAt(0, tcdata[0]);
+  myUUID_R.setCharAt(1, tcdata[1]);
+
+  // Type
+  tbdata = 'B';
+  twdata = tbdata*0x100 + 'B';
+  tadata[16] = tbdata;
+  tadata[17] = tbdata;
+  myBeacon.setMajor(twdata);
+
+  // CRC
+  setCRC(tadata, 20);
+  twdata = tadata[18]*0x100;
+  twdata += tadata[19];
+  //twdata = 0xabcd;
+  myBeacon.setMinor(twdata);
+  Serial.printf("Major: 0x%04x, Minor: 0x%04x\r\n", myBeacon.getMajor(), twdata);
+  Serial.printf("myUUID: %s\r\n", myUUID.c_str());
+  //myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
+  myBeacon.setProximityUUID(BLEUUID(myUUID_R.c_str()));
+#else
+  myBeacon.setProximityUUID(BLEUUID(BEACON_UUID_REV));
+#endif
+
+  BLEAdvertisementData advertisementData;
+  advertisementData.setFlags(0x1A);
+  advertisementData.setManufacturerData(myBeacon.getData());
+  pAdvertising->setAdvertisementData(advertisementData);
+
+  pAdvertising->start();
+}
+
 bool checkCRC(const uint8_t *buf, uint16_t len){
     if(len <= 2) // Sanity check
         return false;
@@ -1219,10 +1645,11 @@ void sub_task_three_axis(void) {
   gv_axis_x = gvf_acc_x = imu_event.accel[0];
   gv_axis_y = gvf_acc_y = imu_event.accel[1];
   gv_axis_z = gvf_acc_z = imu_event.accel[2];
-  gvf_gyro_x = imu_event.gyro[0];
-  gvf_gyro_y = imu_event.gyro[1];
-  gvf_gyro_z = imu_event.gyro[2];
-  Serial.printf("3 Axis Sensor: %d, %d, %d\r\n", gv_axis_x, gv_axis_y, gv_axis_z);
+  gv_gyro_x = gvf_gyro_x = imu_event.gyro[0];
+  gv_gyro_y = gvf_gyro_y = imu_event.gyro[1];
+  gv_gyro_z = gvf_gyro_z = imu_event.gyro[2];
+  Serial.printf("3 Axis Sensor: %d, %d, %d. Gyro: %d, %d, %d\r\n", 
+    gv_axis_x, gv_axis_y, gv_axis_z, gv_gyro_x, gv_gyro_y, gv_gyro_z);
 
 }
 
@@ -1260,8 +1687,11 @@ void sub_task_temperature(void) {
 
   gv_temperature = (int8_t) (gvf_temperature = temp.temperature);
   gv_humidity = (uint8_t) (gvf_humidity = humidity.relative_humidity);
+  gv_temperature = temp.temperature*100.;
+  gv_humidity = humidity.relative_humidity*100.;
 
-  Serial.printf("Temperature: %d, Humidity: %d\r\n", gv_temperature, gv_humidity);
+  Serial.printf("Temperature: %f(%d), Humidity: %f(%d)\r\n", temp.temperature, gv_temperature, 
+    humidity.relative_humidity, gv_humidity);
 
 }
 
@@ -1408,6 +1838,33 @@ int16_t get_axis_z(void) {
 #endif
 }
 
+int16_t get_gyro_x(void) {
+
+#if (BLE_FORMAT_TEST == 1)
+  return 5;
+#else
+  return gv_gyro_x;
+#endif
+}
+
+int16_t get_gyro_y(void) {
+
+#if (BLE_FORMAT_TEST == 1)
+  return -3;
+#else
+  return gv_gyro_y;
+#endif
+}
+
+int16_t get_gyro_z(void) {
+
+#if (BLE_FORMAT_TEST == 1)
+  return -7;
+#else
+  return gv_gyro_z;
+#endif
+}
+
 uint16_t get_gas(void) {
 
 #if (BLE_FORMAT_TEST == 1)
@@ -1417,7 +1874,7 @@ uint16_t get_gas(void) {
 #endif
 }
 
-int8_t get_temperature(void) {
+int16_t get_temperature(void) {
 
 #if (BLE_FORMAT_TEST == 1)
   return 27;
@@ -1426,7 +1883,7 @@ int8_t get_temperature(void) {
 #endif
 }
 
-uint8_t get_humidity(void) {
+uint16_t get_humidity(void) {
 
 #if (BLE_FORMAT_TEST == 1)
   return 25;

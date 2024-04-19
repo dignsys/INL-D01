@@ -20,7 +20,7 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
-#define VERSION_INL_D01_FW  "20240103"
+#define VERSION_INL_D01_FW  "20240419"
 
 #define PIN_BOOT            0
 #define PIN_BAT             2
@@ -501,19 +501,19 @@ void setup() {
   if(isalnum(gv_settings.gv_ssid[0])){
     strcpy(gv_ssid, gv_settings.gv_ssid);
   } else {
-    strlcpy(gv_ssid, ssid, strlen(ssid));
+    strncpy(gv_ssid, ssid, strlen(ssid));
   }
 
   if(isalnum(gv_settings.gv_passwd[0])){
     strcpy(gv_passwd, gv_settings.gv_passwd);
   } else {
-    strlcpy(gv_passwd, password, strlen(password));
+    strncpy(gv_passwd, password, strlen(password));
   }
 
   if(isalnum(gv_settings.gv_server[0])){
     strcpy(gv_server, gv_settings.gv_server);
   } else {
-    strlcpy(gv_server, mqttServer, strlen(mqttServer));
+    strncpy(gv_server, mqttServer, strlen(mqttServer));
   }
 
   Serial.printf("ID: %02x, %02x, %02x, %02x, %02x\r\n", gv_id[0], gv_id[1], gv_id[2], gv_id[3], gv_id[4]);
@@ -527,7 +527,7 @@ void setup() {
   while (WiFi.status() != WL_CONNECTED) {
     if(Serial.available()) {
       c = Serial.read();
-      if(c == 27) break;
+      if((c == 27) || (c == '#')) break;
     }
     delay(200);
     Serial.print(".");
@@ -665,7 +665,7 @@ void sub_test_loop(void){
     while(1){
       if(Serial.available()) {
         c = Serial.read();
-        if(isalnum(c)){
+        if(isalnum(c) || (c == '#')){
           break;
         }
       }
@@ -674,6 +674,9 @@ void sub_test_loop(void){
     Serial.printf("%c", c);
     Serial.println();
 
+    if(c == '#') {
+      break;
+    }
     switch(c) {
       case 'a': 
         sub_test_a();
@@ -2536,6 +2539,7 @@ void sub_test_v(void) {
 void sub_test_w(void) {
 
   char c;
+  char dummy_c;
   uint8_t id_idx = 0;
   int8_t id_pnt = 0;
   uint8_t id_tmp[5] = {0,};
@@ -2551,6 +2555,9 @@ void sub_test_w(void) {
     delay(100);
   }
   Serial.println(c);
+  if(Serial.available()){ // dummy read
+    dummy_c = Serial.read();
+  }
 
   if(c == '0') {  // Clear EEPROM
 #if 0
@@ -2587,6 +2594,9 @@ void sub_test_w(void) {
       memset(gv_settings.gv_ssid, 0x00, EEPROM_ADDR_SSID_SZ);
       strcpy(gv_settings.gv_ssid, cbuf);
       prefs.putBytes("settings", (void*) &gv_settings, sizeof(gv_settings));
+    }
+    if(Serial.available()){ // dummy read
+      dummy_c = Serial.read();
     }
 
     Serial.print("[WLAN] Enter PASSWD: ");

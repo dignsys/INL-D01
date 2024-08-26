@@ -20,6 +20,10 @@
 
   Arduino IDE : Tools --> Board --> esp32 --> ESP32S3 Dev Module 선택
 
+- Arduino Core Version 적용
+
+  Arduino IDE, Board Manager에서 esp32의 버전을 2.0.14로 설치한다. 3.x.x로 설치된 경우에 빌드 오류가 발생할 수 있다.
+
 - Standard Arduino Library 추가
 
   Arduino IDE : Tools --> Manage Libraries... --> Library Manager

@@ -20,14 +20,15 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
-#define VERSION_INL_D01_FW  "20240419"
+#define VERSION_INL_D01_FW  "20240930"
 
 #define PIN_BOOT            0
 #define PIN_BAT             2
 #define PIN_PT              5
 #define PIN_BUTTON          6
 #define PIN_BUZZER          7
-#define PIN_MQ2_AO          4
+#define PIN_GAS_AO          4
+#define PIN_REG_ENB         16
 
 #define TMF8801_EN       -1                      //EN pin of of TMF8x01 module is floating, not used in this demo
 #define TMF8801_INT      -1                      //INT pin of of TMF8x01 module is floating, not used in this demo
@@ -46,8 +47,13 @@ uint8_t caliDataBuf[14] = {0x41,0x57,0x01,0xFD,0x04,0x00,0x00,0x00,0x00,0x00,0x0
 #define ENABLE_MQTT_OP    0
 #define SINGLE_TASK_PERIOD  250 // 20 tasks * 250 msec = 5 sec (full task period)
 //#define INL_NOT_USING_SENSOR
+#define REDUCE_LOG_FOR_PERF_TEST   0
+#define LOG_TERM_CNT_FOR_PERF_TEST  1 // 6 * SINGLE_TASK_PERIOD : 30sec
 
-#define DEVICE_NAME            "ESP32"
+uint8_t log_term_cnt = 0;
+uint8_t log_print_enb = 0;
+
+#define DEVICE_NAME            "INL-D01"
 #define SERVICE_UUID           "7A0247E7-8E88-409B-A959-AB5092DDB03E"
 #define BEACON_UUID            "2D7A9F0C-E0E8-4CC9-A71B-A21DB2D034A1"
 #define BEACON_UUID_REV        "A134D0B2-1DA2-1BA7-C94C-E8E00C9F7A2D"
@@ -196,10 +202,10 @@ int ug_button_isr_detected = 0;
 int ug_button_status = UG_BUTTON_PRESSED;
 unsigned long last_isr_millis = 0;
 
-//#define MQ2_WARM_UP_TIME    300000  //1000*60*5  // 5 minutes
-#define MQ2_WARM_UP_TIME    10000  //1000*10  // 10 seconds
+//#define GAS_SENSOR_WARM_UP_TIME    300000  //1000*60*5  // 5 minutes
+#define GAS_SENSOR_WARM_UP_TIME    10000  //1000*10  // 10 seconds
 
-int mq2_warm_up_end = 0;
+int gas_sensor_warm_up_end = 0;
 unsigned long sys_start_millis = 0;
 
 enum {
@@ -566,7 +572,14 @@ void loop() {
 
     prev_millis = millis();
     if(!sbt_count){
-      Serial.printf("Task Interval: %d\r\n", prev_millis);
+      if(++log_term_cnt >= LOG_TERM_CNT_FOR_PERF_TEST){
+        log_print_enb = 1;
+        log_term_cnt = 0;
+      }
+      else {
+        log_print_enb = 0;
+      }
+      if(log_print_enb) Serial.printf("\r\nTask Interval: %d\r\n", prev_millis);
     }
 
     if(Serial.available()) {
@@ -590,7 +603,9 @@ void loop() {
 
     if(!(sbt_count % 10)){
       if (!deviceConnected) {
+        #if (REDUCE_LOG_FOR_PERF_TEST != 1)
         Serial.printf("*** Custom UUID Byte: %02x\r\n", custom_uuid_byte_0);
+        #endif
         if(sbt_count == 0){
           update_beacon_a();
         } else {
@@ -968,7 +983,7 @@ void update_beacon() {
   myUUID_R.setCharAt(14, tcdata[0]);
   myUUID_R.setCharAt(15, tcdata[1]);
 
-  // MQ-2
+  // MEMS Smoke Gas
   twdata = get_gas(); //320;
   tbdata = ((twdata >> 8)&0x00ff);
   tadata[10] = tbdata;
@@ -1240,8 +1255,10 @@ void update_beacon_a() {
   twdata += tadata[19];
   //twdata = 0xabcd;
   myBeacon.setMinor(twdata);
+  #if (REDUCE_LOG_FOR_PERF_TEST != 1)
   Serial.printf("Major: 0x%04x, Minor: 0x%04x\r\n", myBeacon.getMajor(), twdata);
   Serial.printf("myUUID: %s\r\n", myUUID.c_str());
+  #endif
   //myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
   myBeacon.setProximityUUID(BLEUUID(myUUID_R.c_str()));
 #else
@@ -1382,7 +1399,7 @@ void update_beacon_b() {
   myUUID_R.setCharAt(14, tcdata[0]);
   myUUID_R.setCharAt(15, tcdata[1]);
 
-  // MQ-2
+  // MEMS Smoke Gas
   twdata = get_gas(); //320;
   tbdata = ((twdata >> 8)&0x00ff);
   tadata[10] = tbdata;
@@ -1447,8 +1464,10 @@ void update_beacon_b() {
   twdata += tadata[19];
   //twdata = 0xabcd;
   myBeacon.setMinor(twdata);
+  #if (REDUCE_LOG_FOR_PERF_TEST != 1)
   Serial.printf("Major: 0x%04x, Minor: 0x%04x\r\n", myBeacon.getMajor(), twdata);
   Serial.printf("myUUID: %s\r\n", myUUID.c_str());
+  #endif
   //myBeacon.setProximityUUID(BLEUUID(myUUID.c_str()));
   myBeacon.setProximityUUID(BLEUUID(myUUID_R.c_str()));
 #else
@@ -1631,7 +1650,7 @@ void sub_task_flame(void) {
 #endif
 
   gvi_flame = gv_flame = digitalRead(PIN_PT);
-  Serial.printf("Flame Sensor: %d\r\n", gv_flame);
+  if(log_print_enb) Serial.printf("Flame Sensor: %d\r\n", gv_flame);
 
 }
 
@@ -1651,7 +1670,7 @@ void sub_task_three_axis(void) {
   gv_gyro_x = gvf_gyro_x = imu_event.gyro[0];
   gv_gyro_y = gvf_gyro_y = imu_event.gyro[1];
   gv_gyro_z = gvf_gyro_z = imu_event.gyro[2];
-  Serial.printf("3 Axis Sensor: %d, %d, %d. Gyro: %d, %d, %d\r\n", 
+  if(log_print_enb) Serial.printf("3 Axis Sensor: %d, %d, %d. Gyro: %d, %d, %d\r\n", 
     gv_axis_x, gv_axis_y, gv_axis_z, gv_gyro_x, gv_gyro_y, gv_gyro_z);
 
 }
@@ -1662,17 +1681,17 @@ void sub_task_gas(void) {
   return;
 #endif
 
-  gvi_gas = gv_gas = analogRead(PIN_MQ2_AO);
+  gvi_gas = gv_gas = analogRead(PIN_GAS_AO);
 
-  if(!mq2_warm_up_end){
-    if(millis() > sys_start_millis + MQ2_WARM_UP_TIME){
-      mq2_warm_up_end = 1;
-      Serial.printf("MQ-2 Warm-up end: %d\r\n", gv_gas);
+  if(!gas_sensor_warm_up_end){
+    if(millis() > sys_start_millis + GAS_SENSOR_WARM_UP_TIME){
+      gas_sensor_warm_up_end = 1;
+      Serial.printf("Gas Sensor Warm-up end: %d\r\n", gv_gas);
     }
   }
 
-  Serial.printf("MQ-2 Gas Sensor: %d\r\n", gv_gas);
-  if(!mq2_warm_up_end){
+  if(log_print_enb) Serial.printf("MEMS Smoke Gas Sensor: %d\r\n", gv_gas);
+  if(!gas_sensor_warm_up_end){
     gv_gas = 0;
   }
 
@@ -1693,7 +1712,7 @@ void sub_task_temperature(void) {
   gv_temperature = temp.temperature*100.;
   gv_humidity = humidity.relative_humidity*100.;
 
-  Serial.printf("Temperature: %f(%d), Humidity: %f(%d)\r\n", temp.temperature, gv_temperature, 
+  if(log_print_enb) Serial.printf("Temperature: %f(%d), Humidity: %f(%d)\r\n", temp.temperature, gv_temperature, 
     humidity.relative_humidity, gv_humidity);
 
 }
@@ -1726,7 +1745,7 @@ void sub_task_illuminance(void) {
   val = (int) (((float) out_als)*0.27264);
   gv_illuminance = (uint16_t) val;
 
-  Serial.printf("Illuminance Sensor: %d\r\n", gv_illuminance);
+  if(log_print_enb) Serial.printf("Illuminance Sensor: %d\r\n", gv_illuminance);
 
 }
 
@@ -1739,7 +1758,7 @@ void sub_task_tof(void) {
   if (tof.isDataReady()) {
     gvf_tof = gv_tof = tof.getDistance_mm();
   }
-  Serial.printf("TOF Sensor: %d\r\n", gv_tof);
+  if(log_print_enb) Serial.printf("TOF Sensor: %d\r\n", gv_tof);
 }
 
 void sub_task_mqtt_pub(void) {
@@ -1770,7 +1789,7 @@ void sub_task_mqtt_pub(void) {
   doc["gx"] = gvf_gyro_x;
   doc["gy"] = gvf_gyro_y;
   doc["gz"] = gvf_gyro_z;
-  doc["mq2"] = gvi_gas;
+  doc["gas"] = gvi_gas;
   doc["tem"] = gvf_temperature;
   doc["hum"] = gvf_humidity;
   doc["light"] = gv_illuminance;
@@ -2464,7 +2483,7 @@ void sub_test_t(void) {
     dval = digitalRead(PIN_PT);
     Serial.print("L-51POPT1D2: "); Serial.println(dval);
 
-    Serial.print("MQ-2: "); Serial.println(analogRead(PIN_MQ2_AO));
+    Serial.print("GM-202B: "); Serial.println(analogRead(PIN_GAS_AO));
     c = 0;
     delay(1000);
   }

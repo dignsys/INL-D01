@@ -20,7 +20,7 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
-#define VERSION_INL_D01_FW  "20240930"
+#define VERSION_INL_D01_FW  "20241101"
 
 #define PIN_BOOT            0
 #define PIN_BAT             2
@@ -29,6 +29,7 @@
 #define PIN_BUZZER          7
 #define PIN_GAS_AO          4
 #define PIN_REG_ENB         16
+#define PIN_STATUS          10
 
 #define TMF8801_EN       -1                      //EN pin of of TMF8x01 module is floating, not used in this demo
 #define TMF8801_INT      -1                      //INT pin of of TMF8x01 module is floating, not used in this demo
@@ -208,6 +209,8 @@ unsigned long last_isr_millis = 0;
 int gas_sensor_warm_up_end = 0;
 unsigned long sys_start_millis = 0;
 
+int led_tgl_status = 0;
+
 enum {
   STATE_FLAME_NONE,
   STATE_FLAME_DETECTED,
@@ -328,6 +331,9 @@ void setup() {
   pinMode(PIN_BUTTON, INPUT);
   pinMode(PIN_BUZZER, OUTPUT);
   digitalWrite(PIN_BUZZER, LOW);
+
+  pinMode(PIN_STATUS, OUTPUT);
+  digitalWrite(PIN_STATUS, LOW);
 
 #ifndef INL_NOT_USING_SENSOR
   // Initializing the ICM42670P
@@ -656,6 +662,17 @@ void loop() {
         delay(10);
       } else {
         break;
+      }
+    }
+
+    if(!(sbt_count % 4)){
+      if(led_tgl_status){
+        led_tgl_status = 0;
+        digitalWrite(PIN_STATUS, LOW);
+      }
+      else {
+        led_tgl_status = 1;
+        digitalWrite(PIN_STATUS, HIGH);
       }
     }
 
